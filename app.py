@@ -6,144 +6,125 @@ from PIL import Image
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="Brain Tumor Segmentation System",
+    page_title="Brain Tumor Segmentation AI",
     page_icon="🧠",
     layout="wide"
 )
 
 # ---------------- LOAD MODEL ----------------
-session = ort.InferenceSession("best.onnx")
+session = ort.InferenceSession("best.onnx", providers=["CPUExecutionProvider"])
 input_name = session.get_inputs()[0].name
+input_shape = session.get_inputs()[0].shape  # IMPORTANT DEBUG
 
-# ---------------- CUSTOM UI STYLE ----------------
-st.markdown("""
-<style>
-body {
-    background-color: #0f172a;
-}
+# ---------------- UI HEADER ----------------
+st.title("🧠 Brain Tumor Segmentation AI")
+st.markdown("Upload MRI scan and get AI-based tumor segmentation result")
 
-.main-title {
-    font-size: 42px;
-    font-weight: 800;
-    color: #38bdf8;
-}
+# ---------------- SIDEBAR DEBUG (VERY USEFUL) ----------------
+with st.sidebar:
+    st.header("🔧 Model Info")
+    st.write("Input Name:", input_name)
+    st.write("Input Shape:", input_shape)
 
-.sub-title {
-    font-size: 16px;
-    color: #94a3b8;
-}
+# ---------------- FILE UPLOAD ----------------
+file = st.file_uploader("Upload MRI Image", type=["png", "jpg", "jpeg"])
 
-.card {
-    background: #111827;
-    padding: 20px;
-    border-radius: 16px;
-    box-shadow: 0px 0px 15px rgba(56,189,248,0.2);
-}
+# ---------------- PREPROCESS FUNCTION (FIXED) ----------------
+def preprocess(image):
+    image = np.array(image)
 
-.metric-box {
-    background: #0b1220;
-    padding: 15px;
-    border-radius: 12px;
-    text-align: center;
-    color: white;
-}
-</style>
-""", unsafe_allow_html=True)
+    # Ensure RGB
+    if len(image.shape) == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-# ---------------- HEADER ----------------
-st.markdown('<div class="main-title">🧠 Brain Tumor Segmentation AI</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Deep Learning-based MRI analysis system for tumor localization</div>', unsafe_allow_html=True)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-st.write("")
+    # Get model size safely
+    try:
+        _, _, H, W = input_shape
+        H = H if isinstance(H, int) else 256
+        W = W if isinstance(W, int) else 256
+    except:
+        H, W = 256, 256
 
-# ---------------- LAYOUT ----------------
-col1, col2 = st.columns([1, 2])
+    image = cv2.resize(image, (W, H))
 
-# ---------------- UPLOAD ----------------
-with col1:
-    st.markdown("### 📤 Upload MRI Scan")
-    file = st.file_uploader("Drop MRI image here", type=["png", "jpg", "jpeg"])
+    image = image.astype(np.float32) / 255.0
 
-# ---------------- FUNCTIONS ----------------
-def preprocess(img):
-    img = np.array(img)
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    img = cv2.resize(img, (256, 256))
-    img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))
-    img = np.expand_dims(img, 0)
-    return img
+    # CHW format
+    image = np.transpose(image, (2, 0, 1))
+    image = np.expand_dims(image, axis=0)
 
-def predict(img):
-    pred = session.run(None, {input_name: img})[0]
-    mask = pred[0][0]
+    return image
+
+# ---------------- PREDICT FUNCTION ----------------
+def predict(image):
+    pred = session.run(None, {input_name: image})[0]
+
+    # Handle common segmentation outputs
+    if len(pred.shape) == 4:
+        pred = pred[0]
+
+    if pred.shape[0] == 1:
+        mask = pred[0]
+    else:
+        mask = np.argmax(pred, axis=0)
+
     mask = (mask > 0.5).astype(np.uint8)
+
     return mask
 
-# ---------------- PROCESS ----------------
+# ---------------- MAIN APP ----------------
 if file:
+    image = Image.open(file).convert("RGB")
 
-    image = Image.open(file)
+    col1, col2, col3 = st.columns(3)
 
-    # Original image
-    orig = np.array(image.resize((256, 256)))
+    # ORIGINAL IMAGE
+    with col1:
+        st.subheader("Original MRI")
+        st.image(image, use_container_width=True)
 
-    # Prediction
-    inp = preprocess(image)
-    mask = predict(inp)
-    mask = cv2.resize(mask, (256, 256))
+    # PREPROCESS
+    input_tensor = preprocess(image)
 
-    # Overlay (IMPORTANT for segmentation visualization)
-    overlay = orig.copy()
-    overlay[mask == 1] = [255, 0, 0]
+    # PREDICT
+    try:
+        mask = predict(input_tensor)
 
-    # ---------------- RIGHT SIDE UI ----------------
-    with col2:
+        # Resize back to display
+        orig = np.array(image.resize((256, 256)))
+        mask_resized = cv2.resize(mask, (256, 256))
 
-        st.markdown("### 🖼 Results Dashboard")
+        overlay = orig.copy()
+        overlay[mask_resized == 1] = [255, 0, 0]
 
-        c1, c2, c3 = st.columns(3)
+        # MASK
+        with col2:
+            st.subheader("Tumor Mask")
+            st.image(mask_resized * 255, use_container_width=True)
 
-        with c1:
-            st.markdown("#### Original MRI")
-            st.image(orig, use_container_width=True)
-
-        with c2:
-            st.markdown("#### Tumor Mask")
-            st.image(mask * 255, use_container_width=True)
-
-        with c3:
-            st.markdown("#### Overlay Result")
+        # OVERLAY
+        with col3:
+            st.subheader("Overlay Result")
             st.image(overlay, use_container_width=True)
 
-        # ---------------- METRICS ----------------
-        tumor_ratio = float(mask.mean() * 100)
+        # METRICS
+        tumor_ratio = float(mask_resized.mean() * 100)
 
-        st.write("")
         st.markdown("### 📊 Analysis Report")
 
-        m1, m2 = st.columns(2)
+        c1, c2 = st.columns(2)
 
-        with m1:
-            st.markdown(f"""
-            <div class="metric-box">
-                <h3>Tumor Area</h3>
-                <h2>{tumor_ratio:.2f}%</h2>
-            </div>
-            """, unsafe_allow_html=True)
+        with c1:
+            st.metric("Tumor Area %", f"{tumor_ratio:.2f}%")
 
-        with m2:
-            status = "⚠️ Tumor Detected" if tumor_ratio > 1 else "✅ Normal Region"
+        with c2:
+            status = "⚠️ Tumor Detected" if tumor_ratio > 1 else "✅ No Significant Tumor"
+            st.metric("Status", status)
 
-            st.markdown(f"""
-            <div class="metric-box">
-                <h3>Status</h3>
-                <h2>{status}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+        st.success("Segmentation completed successfully")
 
-        # ---------------- EXPLANATION ----------------
-        st.info(
-            "This system uses a deep learning segmentation model to highlight abnormal brain regions "
-            "in MRI scans. Red overlay indicates predicted tumor region."
-        )
+    except Exception as e:
+        st.error("Model inference failed")
+        st.exception(e)
