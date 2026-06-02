@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 # ---------------- LOAD MODEL ----------------
-session = ort.InferenceSession("best.onnx", providers=["CPUExecutionProvider"])
+session = ort.InferenceSession("best.onnx")
 input_name = session.get_inputs()[0].name
 
 # ---------------- CUSTOM UI STYLE ----------------
